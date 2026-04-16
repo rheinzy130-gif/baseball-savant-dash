@@ -1,3 +1,6 @@
+# --- UPDATE THIS BLOCK ---
+import datetime
+
 import numpy as np
 import pandas as pd
 import plotly.express as px  # <-- FIXED THE NAMEERROR
@@ -6,6 +9,44 @@ import pybaseball as pb
 import requests
 import streamlit as st
 from scipy.stats import gaussian_kde
+
+# Get current year automatically (it's 2026!)
+current_year = datetime.datetime.now().year
+
+
+@st.cache_data
+def get_data(name, year):
+    try:
+        # Split name and look up ID
+        parts = name.split(" ")
+        if len(parts) < 2:
+            return None
+        first, last = parts[0], " ".join(parts[1:])
+
+        lookup = pb.playerid_lookup(last, first)
+        if lookup.empty:
+            return None
+
+        id_ = lookup.iloc[0]["key_mlbam"]
+
+        # Define the date range for the season
+        start_date = f"{year}-03-01"
+
+        # If looking at the current year, stop at today's date
+        if year == current_year:
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        else:
+            end_date = f"{year}-11-15"
+
+        return pb.statcast_pitcher(start_date, end_date, id_)
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return None
+
+
+# --- UPDATE YOUR SIDEBAR YEAR SELECTION ---
+# Replace your old target_year line with this one:
+target_year = st.sidebar.selectbox("Select Season", [2026, 2025, 2024], index=0)
 
 
 # -- LIVE GAME LOGIC --
