@@ -1,16 +1,18 @@
-# --- UPDATE THIS BLOCK ---
 import datetime
 
 import numpy as np
 import pandas as pd
-import plotly.express as px  # <-- FIXED THE NAMEERROR
+import plotly.express as px
 import plotly.graph_objects as go
 import pybaseball as pb
 import requests
 import streamlit as st
 from scipy.stats import gaussian_kde
 
-# Get current year automatically (it's 2026!)
+# -- PAGE CONFIG --
+st.set_page_config(page_title="Pro Scout Dashboard", layout="wide")
+
+# Get current year automatically
 current_year = datetime.datetime.now().year
 
 
@@ -18,58 +20,35 @@ current_year = datetime.datetime.now().year
 def get_data(name, year):
     try:
         # 1. Cleaner Name Lookup
-        lookup = pb.playerid_lookup(name.split()[-1], name.split()[0])
+        parts = name.split()
+        if len(parts) < 2:
+            return None
+        lookup = pb.playerid_lookup(parts[-1], parts[0])
         if lookup.empty:
             return None
         id_ = lookup.iloc[0]["key_mlbam"]
 
-        # 2. Use a wider date range to ensure we catch Spring/Early April
-        # Some early April 2026 games are categorized strictly.
+        # 2. Wider date range for 2026 starts
         start = f"{year}-01-01"
         end = f"{year}-12-31"
 
         df = pb.statcast_pitcher(start, end, id_)
-
-        # 3. Debugging: This will show up in your 'Manage App' logs
-        print(f"Fetched {len(df)} rows for {name} in {year}")
-
         return df
     except Exception as e:
         st.error(f"Search Error: {e}")
         return None
 
 
-# --- UPDATE YOUR SIDEBAR YEAR SELECTION ---
-# Replace your old target_year line with this one:
-target_year = st.sidebar.selectbox("Select Season", [2026, 2025, 2024], index=0)
-
-
-# -- LIVE GAME LOGIC --
 def get_live_pitcher(team_name):
-    """Checks MLB API for current live pitcher for a given team"""
     try:
         url = "https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1"
         data = requests.get(url).json()
         for date in data.get("dates", []):
             for game in date.get("games", []):
-                # Check if team is playing
                 away = game["teams"]["away"]["team"]["name"]
                 home = game["teams"]["home"]["team"]["name"]
-
                 if team_name in away or team_name in home:
                     game_pk = game["gamePk"]
-                    # Get live boxscore
-                    live_url = (
-                        f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
-                    )
-                    live_data = requests.get(live_url).json()
-
-                    # Identify if our team is pitching or hitting
-                    is_home = team_name in home
-                    side = "home" if is_home else "away"
-
-                    # Note: This is simplified; in a real game, you'd pull the specific 'defense' pitcher
-                    # For now, let's grab the current pitcher ID from the feed
                     feed_url = (
                         f"https://statsapi.mlb.com/api/v1/game/{game_pk}/feed/live"
                     )
@@ -82,11 +61,12 @@ def get_live_pitcher(team_name):
 
 
 # -- SIDEBAR --
-st.sidebar.header("Live Feed Control")
+st.sidebar.header("Dashboard Controls")
+target_year = st.sidebar.selectbox("Select Season", [2026, 2025, 2024], index=0)
 auto_live = st.sidebar.checkbox("Sync with Live Game", value=False)
 selected_team = st.sidebar.selectbox(
-    "Your Team", ["Yankees", "Dodgers", "Mets", "Braves", "Red Sox"]
-)  # Add yours!
+    "Your Team", ["Mets", "Dodgers", "Yankees", "Braves", "Padres", "Mariners"]
+)
 
 if auto_live:
     live_name = get_live_pitcher(selected_team)
@@ -99,28 +79,91 @@ if auto_live:
 else:
     target_name = st.sidebar.text_input("Manual Search", "Jacob deGrom")
 
-with col_lat:
-    st.subheader("Pitch Sequencing (The Lattice)")
+# -- FETCH DATA --
+data = get_data(target_name, target_year)
 
-    # Create the coordinate map for the "Plinko" look
-    # We plot 'balls' on X and 'strikes' on Y
-    fig_lat = px.scatter(
-        data,
-        x="balls",
-        y="strikes",
-        color="pitch_type",
-        title="Pitch Selection by Count",
-        symbol="pitch_type",
-        height=400,
+# -- MAIN UI --
+st.title(f"{target_name} - {target_year} Analysis")
+
+if data is None or data.empty:
+    st.warning(
+        f"No Statcast data found for {target_name} in {target_year}. Note: 2026 data can lag by 24-48 hours."
+    )
+    st.stop()
+
+
+# 1. PERCENTILE BARS (UI Placeholders)
+def draw_bar(label, val):
+    color = "red" if val > 70 else ("#3b4cc0" if val < 30 else "#dddddd")
+    st.markdown(f"**{label}**")
+    st.markdown(
+        f"""<div style="background:#333; border-radius:10px; height:12px; width:100%;">
+                <div style="background:{color}; width:{val}%; height:12px; border-radius:10px;"></div>
+                </div>""",
+        unsafe_allow_html=True,
     )
 
-    # Jitter the points so they don't all stack on top of each other
-    fig_lat.update_traces(marker=dict(size=12, opacity=0.6))
+
+c1, c2 = st.columns(2)
+with c1:
+    draw_bar("xERA", 88)
+    draw_bar("Fastball Velo", 99)
+with c2:
+    draw_bar("K %", 95)
+    draw_bar("Whiff %", 92)
+
+st.divider()
+
+# 2. THE LATTICE & MOVEMENT ROWS
+col_lat, col_mov = st.columns(2)
+
+with col_lat:
+    st.subheader("Pitch Sequencing (The Lattice)")
+    # Add 'jitter' to make the dots visible on the counts
+    data["balls_j"] = data["balls"] + np.random.uniform(-0.2, 0.2, len(data))
+    data["strikes_j"] = data["strikes"] + np.random.uniform(-0.2, 0.2, len(data))
+
+    fig_lat = px.scatter(
+        data,
+        x="balls_j",
+        y="strikes_j",
+        color="pitch_type",
+        labels={"balls_j": "Balls", "strikes_j": "Strikes"},
+        hover_data=["release_speed", "pitch_type"],
+    )
     fig_lat.update_layout(
-        xaxis=dict(tickvals=[0, 1, 2, 3], title="Balls"),
-        yaxis=dict(tickvals=[0, 1, 2], title="Strikes"),
+        xaxis=dict(tickvals=[0, 1, 2, 3]),
+        yaxis=dict(tickvals=[0, 1, 2]),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font_color="white",
     )
     st.plotly_chart(fig_lat, use_container_width=True)
+
+with col_mov:
+    st.subheader("Movement Profile")
+    data["horz"] = data["pfx_x"] * -12
+    data["vert"] = data["pfx_z"] * 12
+    fig_mov = px.scatter(data, x="horz", y="vert", color="pitch_type", opacity=0.5)
+    fig_mov.add_vline(x=0, line_color="white")
+    fig_mov.add_hline(y=0, line_color="white")
+    fig_mov.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white"
+    )
+    st.plotly_chart(fig_mov, use_container_width=True)
+
+# 3. VELOCITY DISTRIBUTION
+st.divider()
+st.subheader("Pitch Distribution by Velocity")
+fig_vel = go.Figure()
+for p in data["pitch_type"].unique():
+    v_data = data[data["pitch_type"] == p]["release_speed"].dropna()
+    if len(v_data) > 5:
+        kde = gaussian_kde(v_data)
+        x = np.linspace(v_data.min() - 2, v_data.max() + 2, 100)
+        fig_vel.add_trace(go.Scatter(x=x, y=kde(x), fill="tozeroy", name=p))
+
+fig_vel.update_layout(
+    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white"
+)
+st.plotly_chart(fig_vel, use_container_width=True)
