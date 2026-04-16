@@ -17,30 +17,25 @@ current_year = datetime.datetime.now().year
 @st.cache_data
 def get_data(name, year):
     try:
-        # Split name and look up ID
-        parts = name.split(" ")
-        if len(parts) < 2:
-            return None
-        first, last = parts[0], " ".join(parts[1:])
-
-        lookup = pb.playerid_lookup(last, first)
+        # 1. Cleaner Name Lookup
+        lookup = pb.playerid_lookup(name.split()[-1], name.split()[0])
         if lookup.empty:
             return None
-
         id_ = lookup.iloc[0]["key_mlbam"]
 
-        # Define the date range for the season
-        start_date = f"{year}-03-01"
+        # 2. Use a wider date range to ensure we catch Spring/Early April
+        # Some early April 2026 games are categorized strictly.
+        start = f"{year}-01-01"
+        end = f"{year}-12-31"
 
-        # If looking at the current year, stop at today's date
-        if year == current_year:
-            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        else:
-            end_date = f"{year}-11-15"
+        df = pb.statcast_pitcher(start, end, id_)
 
-        return pb.statcast_pitcher(start_date, end_date, id_)
+        # 3. Debugging: This will show up in your 'Manage App' logs
+        print(f"Fetched {len(df)} rows for {name} in {year}")
+
+        return df
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Search Error: {e}")
         return None
 
 
@@ -103,3 +98,29 @@ if auto_live:
         target_name = st.sidebar.text_input("Manual Search", "Jacob deGrom")
 else:
     target_name = st.sidebar.text_input("Manual Search", "Jacob deGrom")
+
+with col_lat:
+    st.subheader("Pitch Sequencing (The Lattice)")
+
+    # Create the coordinate map for the "Plinko" look
+    # We plot 'balls' on X and 'strikes' on Y
+    fig_lat = px.scatter(
+        data,
+        x="balls",
+        y="strikes",
+        color="pitch_type",
+        title="Pitch Selection by Count",
+        symbol="pitch_type",
+        height=400,
+    )
+
+    # Jitter the points so they don't all stack on top of each other
+    fig_lat.update_traces(marker=dict(size=12, opacity=0.6))
+    fig_lat.update_layout(
+        xaxis=dict(tickvals=[0, 1, 2, 3], title="Balls"),
+        yaxis=dict(tickvals=[0, 1, 2], title="Strikes"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_color="white",
+    )
+    st.plotly_chart(fig_lat, use_container_width=True)
